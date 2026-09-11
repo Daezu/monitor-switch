@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# Usage: monitor-switch.sh [-n|--dry-run] [--display N]... [-h|--help]
+#
+# Switches DDC/CI capable monitors between their two "kinds" of input
+# (DisplayPort vs HDMI/DVI/VGA), toggling away from whichever kind is
+# currently active.
+#
+#   -n, --dry-run     Show what would be switched without doing it.
+#   --display N       Only operate on display N (repeatable). Defaults to
+#                      all displays detected by `ddcutil detect`.
+#   -h, --help        Show this help.
 
 set -euo pipefail
 
