@@ -16,6 +16,9 @@ window manager.
 - **Works with DisplayPort, HDMI, DVI, and VGA**, in any combination. A
   monitor currently on DVI-1 with only VGA-1 as its other input will switch
   to VGA, no configuration needed.
+- **Explicit targeting when you need it.** `--display N:INPUT` pins a
+  specific display to a specific input instead of just toggling away from
+  whatever it's currently on.
 - **Switches all monitors together.** Detection runs first for every
   monitor, then all switches are fired off in parallel at the end, so every
   screen flips over at roughly the same moment instead of one by one.
@@ -75,6 +78,7 @@ Switches every detected monitor to its other input.
 | --- | --- |
 | `-n`, `--dry-run` | Show what would change without actually switching anything. |
 | `--display N` | Only operate on ddcutil display number `N`. Repeatable to target several specific displays. Defaults to all detected displays. |
+| `--display N:INPUT` | Switch display `N` to `INPUT` specifically, instead of toggling away from its current input. `INPUT` is either a generic type (`DisplayPort`/`dp`, `HDMI`, `DVI`, `VGA`) or a specific port name as reported by `ddcutil --display N capabilities`, e.g. `HDMI-1`, `HDMI-2`, `DP-1`. Matching is case-insensitive and ignores `-`/`_`/spaces, so `hdmi1`, `HDMI-1`, and `HDMI 1` are equivalent. |
 | `-h`, `--help` | Show a short usage summary. |
 
 ### Examples
@@ -91,6 +95,21 @@ Only switch monitor 2 (find display numbers via `ddcutil detect`):
 ./monitor-switch.sh --display 2
 ```
 
+Switch display 1 to HDMI and display 2 to DisplayPort explicitly, leaving
+everything else untouched:
+
+```sh
+./monitor-switch.sh --display 1:hdmi --display 2:displayport
+```
+
+If a monitor has two HDMI ports, target the specific one by its port name
+(as shown in `ddcutil --display N capabilities`, e.g. `HDMI-1`/`HDMI-2`):
+
+```sh
+./monitor-switch.sh --display 1:hdmi1
+./monitor-switch.sh --display 1:hdmi2
+```
+
 ## How it works
 
 For every monitor `ddcutil detect` reports:
@@ -101,7 +120,10 @@ For every monitor `ddcutil detect` reports:
    (other input types, e.g. USB-C, are ignored).
 3. Read the currently active input via `ddcutil --display N getvcp 60`.
 4. Queue a switch to the first other advertised input of a *different*
-   recognized type (e.g. DisplayPort &rarr; HDMI, or DVI &rarr; VGA).
+   recognized type (e.g. DisplayPort &rarr; HDMI, or DVI &rarr; VGA) — unless
+   `--display N:INPUT` requested a specific type for that display, in which
+   case it queues that type instead (or skips it if already active, or warns
+   if not advertised).
 
 Once every monitor has been inspected, all queued `setvcp` calls are run in
 parallel and the script waits for them to finish, so the switch happens as

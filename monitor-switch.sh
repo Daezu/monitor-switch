@@ -1,19 +1,63 @@
 #!/usr/bin/env bash
-# Usage: monitor-switch.sh [-n|--dry-run] [--display N]... [-h|--help]
+# Usage: monitor-switch.sh [-n|--dry-run] [--display N[:INPUT]]... [-h|--help]
 #
 # Switches DDC/CI capable monitors between their two "kinds" of input
 # (DisplayPort vs HDMI/DVI/VGA), toggling away from whichever kind is
 # currently active.
 #
-#   -n, --dry-run     Show what would be switched without doing it.
-#   --display N       Only operate on display N (repeatable). Defaults to
-#                      all displays detected by `ddcutil detect`.
-#   -h, --help        Show this help.
+#   -n, --dry-run       Show what would be switched without doing it.
+#   --display N         Only operate on display N (repeatable). Defaults to
+#                        all displays detected by `ddcutil detect`.
+#   --display N:INPUT   Switch display N to INPUT specifically, instead of
+#                        toggling away from its current input. INPUT is
+#                        either a generic type (DisplayPort/dp, HDMI, DVI,
+#                        VGA) or a specific port name as reported by
+#                        `ddcutil --display N capabilities` (e.g. HDMI-1,
+#                        HDMI-2, DP-1). Matching is case-insensitive and
+#                        ignores '-'/'_'/spaces, so hdmi1, HDMI-1, and
+#                        "HDMI 1" are equivalent.
+#   -h, --help          Show this help.
 
 set -euo pipefail
 
 DRY_RUN=0
 DISPLAYS=()
+declare -A REQUESTED=()
+
+# Normalize a user-supplied input name to a canonical generic type, or fail.
+normalize_type() {
+    case "${1,,}" in
+        dp|displayport) echo "DisplayPort" ;;
+        hdmi) echo "HDMI" ;;
+        dvi) echo "DVI" ;;
+        vga) echo "VGA" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Lowercase and strip non-alphanumeric characters, for loose name matching
+# (so "HDMI-1", "hdmi1", and "HDMI 1" all compare equal).
+normalize_name() {
+    local s="${1,,}"
+    echo "${s//[^a-z0-9]/}"
+}
+
+# Does user-requested input string $1 match a given entry (type $2, code $3,
+# name $4)? Matches on generic type, loosely-normalized port name, or exact
+# hex code.
+matches_requested() {
+    local requested="$1" entry_type="$2" entry_code="$3" entry_name="$4"
+    local generic
+    if generic=$(normalize_type "$requested"); then
+        [[ "$entry_type" == "$generic" ]] && return 0
+    fi
+    [[ "$(normalize_name "$requested")" == "$(normalize_name "$entry_name")" ]] && return 0
+    local req_code="${requested,,}" ent_code="${entry_code,,}"
+    req_code="${req_code#0x}"
+    ent_code="${ent_code#0x}"
+    [[ "$req_code" == "$ent_code" ]] && return 0
+    return 1
+}
 
 usage() {
     awk '/^#!/{next} /^#/{sub(/^# ?/, ""); print; next} {exit}' "$0"
@@ -23,7 +67,19 @@ usage() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -n|--dry-run) DRY_RUN=1; shift ;;
-        --display) DISPLAYS+=("$2"); shift 2 ;;
+        --display)
+            arg="$2"
+            disp="${arg%%:*}"
+            if [[ "$arg" == *:* ]]; then
+                req="${arg#*:}"
+                if [[ -z "$req" ]]; then
+                    echo "Missing input after ':' in '$arg'" >&2
+                    usage 1
+                fi
+                REQUESTED["$disp"]="$req"
+            fi
+            DISPLAYS+=("$disp")
+            shift 2 ;;
         -h|--help) usage 0 ;;
         *) echo "Unknown argument: $1" >&2; usage 1 ;;
     esac
@@ -107,10 +163,12 @@ for disp in "${DISPLAYS[@]}"; do
     fi
 
     current_type=""
+    current_name=""
     for e in "${entries[@]}"; do
         if [[ "${e%%:*}" == "$current_code" ]]; then
             rest="${e#*:}"
             current_type="${rest%%:*}"
+            current_name="${rest#*:}"
             break
         fi
     done
@@ -120,16 +178,37 @@ for disp in "${DISPLAYS[@]}"; do
         continue
     fi
 
-    candidates=()
-    for e in "${entries[@]}"; do
-        rest="${e#*:}"
-        type="${rest%%:*}"
-        [[ "$type" != "$current_type" ]] && candidates+=("$e")
-    done
+    requested="${REQUESTED[$disp]:-}"
 
-    if [[ ${#candidates[@]} -eq 0 ]]; then
-        echo "  Warning: monitor is on $current_type but doesn't advertise another recognized input; skipping."
-        continue
+    if [[ -n "$requested" ]]; then
+        if matches_requested "$requested" "$current_type" "$current_code" "$current_name"; then
+            echo "  Already on $current_name ($current_type); nothing to do."
+            continue
+        fi
+        candidates=()
+        for e in "${entries[@]}"; do
+            code="${e%%:*}"
+            rest="${e#*:}"
+            type="${rest%%:*}"
+            name="${rest#*:}"
+            matches_requested "$requested" "$type" "$code" "$name" && candidates+=("$e")
+        done
+        if [[ ${#candidates[@]} -eq 0 ]]; then
+            echo "  Warning: monitor doesn't advertise an input matching '$requested'; skipping." >&2
+            continue
+        fi
+    else
+        candidates=()
+        for e in "${entries[@]}"; do
+            rest="${e#*:}"
+            type="${rest%%:*}"
+            [[ "$type" != "$current_type" ]] && candidates+=("$e")
+        done
+
+        if [[ ${#candidates[@]} -eq 0 ]]; then
+            echo "  Warning: monitor is on $current_type but doesn't advertise another recognized input; skipping."
+            continue
+        fi
     fi
 
     target="${candidates[0]%%:*}"
